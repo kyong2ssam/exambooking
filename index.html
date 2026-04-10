@@ -49,6 +49,7 @@
       const [fetchError, setFetchError] = useState(false);
       const [isAgreed, setIsAgreed] = useState(false); 
 
+      // 데이터 불러오기 로직 (설정값 오류 예외처리 포함)
       const fetchBookings = useCallback((isSilent = false) => {
         if (!GAS_WEB_APP_URL) return;
         const separator = GAS_WEB_APP_URL.includes('?') ? '&' : '?';
@@ -77,9 +78,9 @@
                 setSettings(data.settings);
                 const now = new Date();
                 
-                // 에러 방지: 스프레드시트에 값이 누락되었을 경우를 대비한 기본값 처리
-                const startStr = data.settings['신청 시작 일시'] || '2026-01-01 00:00';
-                const endStr = data.settings['신청 마감 일시'] || '2026-12-31 23:59';
+                // 에러 방지: 스프레드시트에 값이 누락되었을 경우를 대비한 안전한 문자열 처리
+                const startStr = data.settings['신청 시작 일시'] ? String(data.settings['신청 시작 일시']) : '2026-01-01 00:00';
+                const endStr = data.settings['신청 마감 일시'] ? String(data.settings['신청 마감 일시']) : '2030-12-31 23:59';
                 
                 const startTime = new Date(startStr.replace(/-/g, '/'));
                 const endTime = new Date(endStr.replace(/-/g, '/'));
@@ -87,15 +88,18 @@
                 if (now < startTime) setAppStatus('waiting');
                 else if (now > endTime) setAppStatus('closed');
                 else setAppStatus('open');
+              } else {
+                setAppStatus('open');
               }
             }
           })
           .catch(err => {
             if(!isSilent) console.error("데이터 갱신 실패:", err);
             setFetchError(true); 
-            if (appStatus === 'loading') setAppStatus('open'); 
+            // 에러가 났을 때 빈 화면에 갇히지 않도록 강제로 창 열어주기
+            setAppStatus(prev => prev === 'loading' ? 'open' : prev); 
           });
-      }, [appStatus]);
+      }, []);
 
       useEffect(() => {
         fetchBookings(false);
@@ -116,12 +120,21 @@
         return <div className="min-h-screen bg-gray-50 flex items-center justify-center font-sans text-gray-500 font-bold">서버에서 설정을 불러오는 중입니다...</div>;
       }
 
-      // 안전한 데이터 추출
-      const DATES = settings && settings['열람 가능 날짜'] ? settings['열람 가능 날짜'].split(',').map(s=>s.trim()) : ['4월 20일', '4월 21일', '4월 22일'];
-      const exceptionStr = settings && settings['무제한 예외 시간'] ? settings['무제한 예외 시간'] : '4월 20일|15:30~16:30';
+      // ==============================================================================
+      // ✨ 스프레드시트 설정값 화면 연동 부분 ✨
+      // ==============================================================================
+      // 1. 입력 기한 안내 문구
+      const deadlineStr = settings && settings['신청 마감 일시'] ? settings['신청 마감 일시'] : '지정되지 않음';
+
+      // 2. 드롭다운 열람 가능 날짜
+      const datesStr = settings && settings['열람 가능 날짜'] ? settings['열람 가능 날짜'] : '4월 20일, 4월 21일, 4월 22일';
+      const DATES = datesStr.split(',').map(s => s.trim()).filter(Boolean);
+
+      // 3. 인원 제한 예외 시간 처리
+      const exceptionStr = settings && settings['무제한 예외 시간'] ? settings['무제한 예외 시간'] : '';
       let excDate = '', excTime = '';
       if (exceptionStr.includes('|')) {
-        [excDate, excTime] = exceptionStr.split('|').map(s=>s.trim());
+        [excDate, excTime] = exceptionStr.split('|').map(s => s.trim());
       }
       
       const getTimesForDate = (date) => {
@@ -130,7 +143,7 @@
           '12:50~13:00', '13:00~13:10', '13:10~13:20', '13:20~13:30',
           '13:30~13:40', '14:30~14:40'
         ];
-        if (date === excDate && excTime) {
+        if (excDate && excTime && date === excDate) {
           return [...baseTimes, excTime];
         }
         return [...baseTimes, '15:30~15:40'];
@@ -139,7 +152,7 @@
       const currentSlotKey = normalizeKey(`${formData.date}|${formData.time}`);
       const currentCount = bookingsCount[currentSlotKey] || 0;
       
-      const isUnlimitedSlot = formData.date === excDate && formData.time === excTime;
+      const isUnlimitedSlot = excDate && excTime && formData.date === excDate && formData.time === excTime;
       const remainingCount = MAX_LIMIT - currentCount;
       const isFull = formData.time ? (isUnlimitedSlot ? false : remainingCount <= 0) : false;
 
@@ -207,7 +220,7 @@
                 <AlertCircle className="w-8 h-8" />
               </div>
               <h2 className="text-2xl font-bold text-gray-900 mb-4">신청이 모두 마감되었습니다</h2>
-              <p className="text-gray-600 mb-6">이번 학기 기출문제 열람 신청 기간이 종료되었습니다.</p>
+              <p className="text-gray-600 mb-6">기출문제 열람 신청 기간이 종료되었습니다.</p>
             </div>
           </div>
         );
@@ -244,7 +257,8 @@
                 <p className="text-base">원하시는 날짜와 시간대를 선택하여 신청해 주세요.</p>
                 <div className="inline-block text-left bg-blue-50 border border-blue-100 rounded-xl px-5 py-3 text-gray-700 space-y-1.5 w-full sm:w-auto">
                   <p><span className="font-bold mr-2">📍 열람 장소 :</span>본교무실</p>
-                  <p><span className="font-bold mr-2">⏳ 입력 기한 :</span>~ {settings && settings['신청 마감 일시'] ? settings['신청 마감 일시'] : '2026-04-22 14:00'}</p>
+                  {/* 스프레드시트의 마감 시간이 자동 표기되는 영역 */}
+                  <p><span className="font-bold mr-2">⏳ 입력 기한 :</span>~ {deadlineStr}</p>
                   <p><span className="font-bold mr-2 text-blue-600">🔥 인원 제한 :</span><span className="text-blue-600 font-medium">시간대별 선착순 5명 {excDate ? `(${excDate} ${excTime} 제한 없음)` : ''}</span></p>
                 </div>
               </div>
@@ -323,7 +337,7 @@
                         const tempSlotKey = normalizeKey(`${formData.date}|${time}`);
                         const count = bookingsCount[tempSlotKey] || 0;
                         const remain = MAX_LIMIT - count;
-                        const slotFull = !(formData.date === excDate && time === excTime) && remain <= 0;
+                        const slotFull = !(excDate && excTime && formData.date === excDate && time === excTime) && remain <= 0;
                         return <option key={time} value={time} disabled={formData.date && slotFull}>{time}</option>;
                       })}
                     </select>
